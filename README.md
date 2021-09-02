@@ -1,5 +1,7 @@
 # dwm-awesomeextrabar
 
+Thanks ornx, Yegor Bayev, Chip Senkbeil and Finn Rayment
+
 ### please use 210902 VERSION
 
 fix clash.
