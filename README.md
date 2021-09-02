@@ -10,6 +10,7 @@ If you want to add the following patches and you have a few problems, you can co
 3. status2d
 4. statuscmd
 5. tags-preview
+
 etc.
 
 ## extrabar-left-preview
