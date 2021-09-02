@@ -1,0 +1,609 @@
+diff -uNa a/config.h b/config.h
+--- a/config.h	2021-09-02 19:31:39.543748011 +0800
++++ b/config.h	2021-09-02 19:30:18.390409090 +0800
+@@ -5,6 +5,8 @@
+ static const unsigned int snap      = 32;       /* snap pixel */
+ static const int showbar            = 1;        /* 0 means no bar */
+ static const int topbar             = 1;        /* 0 means bottom bar */
++static const int extrabarright      = 1;        /* 1 means extra bar text on right */
++static const char statussep         = ';';      /* separator between status bars */
+ static const char *fonts[]          = { "monospace:size=10" };
+ static const char dmenufont[]       = "monospace:size=10";
+ static const char col_gray1[]       = "#222222";
+@@ -16,6 +18,7 @@
+ 	/*               fg         bg         border   */
+ 	[SchemeNorm] = { col_gray3, col_gray1, col_gray2 },
+ 	[SchemeSel]  = { col_gray4, col_cyan,  col_cyan  },
++	[SchemeHid]  = { col_cyan,  col_gray1, col_cyan  },
+ };
+ 
+ /* tagging */
+@@ -65,8 +68,10 @@
+ 	{ MODKEY,                       XK_p,      spawn,          {.v = dmenucmd } },
+ 	{ MODKEY|ShiftMask,             XK_Return, spawn,          {.v = termcmd } },
+ 	{ MODKEY,                       XK_b,      togglebar,      {0} },
+-	{ MODKEY,                       XK_j,      focusstack,     {.i = +1 } },
+-	{ MODKEY,                       XK_k,      focusstack,     {.i = -1 } },
++	{ MODKEY,                       XK_j,      focusstackvis,  {.i = +1 } },
++	{ MODKEY,                       XK_k,      focusstackvis,  {.i = -1 } },
++	{ MODKEY|ShiftMask,             XK_j,      focusstackhid,  {.i = +1 } },
++	{ MODKEY|ShiftMask,             XK_k,      focusstackhid,  {.i = -1 } },
+ 	{ MODKEY,                       XK_i,      incnmaster,     {.i = +1 } },
+ 	{ MODKEY,                       XK_d,      incnmaster,     {.i = -1 } },
+ 	{ MODKEY,                       XK_h,      setmfact,       {.f = -0.05} },
+@@ -85,6 +90,8 @@
+ 	{ MODKEY,                       XK_period, focusmon,       {.i = +1 } },
+ 	{ MODKEY|ShiftMask,             XK_comma,  tagmon,         {.i = -1 } },
+ 	{ MODKEY|ShiftMask,             XK_period, tagmon,         {.i = +1 } },
++	{ MODKEY,                       XK_s,      show,           {0} },
++	{ MODKEY,                       XK_h,      hide,           {0} },
+ 	TAGKEYS(                        XK_1,                      0)
+ 	TAGKEYS(                        XK_2,                      1)
+ 	TAGKEYS(                        XK_3,                      2)
+@@ -103,6 +110,8 @@
+ 	/* click                event mask      button          function        argument */
+ 	{ ClkLtSymbol,          0,              Button1,        setlayout,      {0} },
+ 	{ ClkLtSymbol,          0,              Button3,        setlayout,      {.v = &layouts[2]} },
++	{ ClkTopTitle,          0,              Button1,        hide,           {0} },
++	{ ClkWinTitle,          0,              Button1,        togglewin,      {0} },
+ 	{ ClkWinTitle,          0,              Button2,        zoom,           {0} },
+ 	{ ClkStatusText,        0,              Button2,        spawn,          {.v = termcmd } },
+ 	{ ClkClientWin,         MODKEY,         Button1,        movemouse,      {0} },
+diff -uNa a/dwm.c b/dwm.c
+--- a/dwm.c	2021-09-02 19:11:04.656996420 +0800
++++ b/dwm.c	2021-09-02 19:29:08.170404260 +0800
+@@ -50,6 +50,7 @@
+ #define INTERSECT(x,y,w,h,m)    (MAX(0, MIN((x)+(w),(m)->wx+(m)->ww) - MAX((x),(m)->wx)) \
+                                * MAX(0, MIN((y)+(h),(m)->wy+(m)->wh) - MAX((y),(m)->wy)))
+ #define ISVISIBLE(C)            ((C->tags & C->mon->tagset[C->mon->seltags]))
++#define HIDDEN(C)               ((getstate(C->win) == IconicState))
+ #define LENGTH(X)               (sizeof X / sizeof X[0])
+ #define MOUSEMASK               (BUTTONMASK|PointerMotionMask)
+ #define WIDTH(X)                ((X)->w + 2 * (X)->bw)
+@@ -59,12 +60,12 @@
+ 
+ /* enums */
+ enum { CurNormal, CurResize, CurMove, CurLast }; /* cursor */
+-enum { SchemeNorm, SchemeSel }; /* color schemes */
++enum { SchemeNorm, SchemeSel, SchemeHid }; /* color schemes */
+ enum { NetSupported, NetWMName, NetWMState, NetWMCheck,
+        NetWMFullscreen, NetActiveWindow, NetWMWindowType,
+        NetWMWindowTypeDialog, NetClientList, NetLast }; /* EWMH atoms */
+ enum { WMProtocols, WMDelete, WMState, WMTakeFocus, WMLast }; /* default atoms */
+-enum { ClkTagBar, ClkLtSymbol, ClkStatusText, ClkWinTitle,
++enum { ClkTagBar, ClkLtSymbol, ClkStatusText, ClkWinTitle, ClkTopTitle,
+        ClkClientWin, ClkRootWin, ClkLast }; /* clicks */
+ 
+ typedef union {
+@@ -117,6 +118,9 @@
+ 	int nmaster;
+ 	int num;
+ 	int by;               /* bar geometry */
++	int btw;              /* width of tasks portion of bar */
++	int bt;               /* number of tasks */
++	int eby;              /* extra bar geometry */
+ 	int mx, my, mw, mh;   /* screen size */
+ 	int wx, wy, ww, wh;   /* window area  */
+ 	unsigned int seltags;
+@@ -124,11 +128,13 @@
+ 	unsigned int tagset[2];
+ 	int showbar;
+ 	int topbar;
++	int hidsel;
+ 	Client *clients;
+ 	Client *sel;
+ 	Client *stack;
+ 	Monitor *next;
+ 	Window barwin;
++	Window extrabarwin;
+ 	const Layout *lt[2];
+ };
+ 
+@@ -168,13 +174,17 @@
+ static void focus(Client *c);
+ static void focusin(XEvent *e);
+ static void focusmon(const Arg *arg);
+-static void focusstack(const Arg *arg);
++static void focusstackvis(const Arg *arg);
++static void focusstackhid(const Arg *arg);
++static void focusstack(int inc, int vis);
+ static Atom getatomprop(Client *c, Atom prop);
+ static int getrootptr(int *x, int *y);
+ static long getstate(Window w);
+ static int gettextprop(Window w, Atom atom, char *text, unsigned int size);
+ static void grabbuttons(Client *c, int focused);
+ static void grabkeys(void);
++static void hide(const Arg *arg);
++static void hidewin(Client *c);
+ static void incnmaster(const Arg *arg);
+ static void keypress(XEvent *e);
+ static void killclient(const Arg *arg);
+@@ -204,6 +214,8 @@
+ static void setmfact(const Arg *arg);
+ static void setup(void);
+ static void seturgent(Client *c, int urg);
++static void show(const Arg *arg);
++static void showwin(Client *c);
+ static void showhide(Client *c);
+ static void sigchld(int unused);
+ static void spawn(const Arg *arg);
+@@ -214,6 +226,7 @@
+ static void togglefloating(const Arg *arg);
+ static void toggletag(const Arg *arg);
+ static void toggleview(const Arg *arg);
++static void togglewin(const Arg *arg);
+ static void unfocus(Client *c, int setfocus);
+ static void unmanage(Client *c, int destroyed);
+ static void unmapnotify(XEvent *e);
+@@ -238,6 +251,7 @@
+ /* variables */
+ static const char broken[] = "broken";
+ static char stext[256];
++static char estext[256];
+ static int screen;
+ static int sw, sh;           /* X display screen geometry width, height */
+ static int bh, blw = 0;      /* bar geometry */
+@@ -430,7 +444,51 @@
+ 		selmon = m;
+ 		focus(NULL);
+ 	}
+-	if (ev->window == selmon->barwin) {
++	if (ev->window == selmon->extrabarwin) {
++		if (extrabarright) {
++			if (ev->x > selmon->ww - (int)TEXTW(estext) + lrpad - 2) {
++				click = ClkStatusText;
++			} else {
++				x = 0;
++				c = m->clients;
++
++				if (c) {
++					do {
++						if (!ISVISIBLE(c))
++							continue;
++						else
++							x += (1.0 / (double)m->bt) * (m->ww - (int)TEXTW(estext));
++							/* if you have barpadding, instead of the follow line */
++							//x += (1.0 / (double)m->bt) * (m->ww - (int)TEXTW(estext) - 2 * sp);
++					} while (ev->x > x && (c = c->next));
++
++					click = ClkWinTitle;
++					arg.v = c;
++				}
++			}
++		} else {
++			if (ev->x >= 0 && ev->x < (int)TEXTW(estext)) {
++				click = ClkStatusText;
++			} else {
++				x = (int)TEXTW(estext);
++				c = m->clients;
++
++				if (c) {
++					do {
++						if (!ISVISIBLE(c))
++							continue;
++						else
++							x += (1.0 / (double)m->bt) * (m->ww - (int)TEXTW(estext));
++							/* if you have barpadding, instead of the follow line */
++							//x += (1.0 / (double)m->bt) * (m->ww - (int)TEXTW(estext) - 2 * sp);
++					} while (ev->x > x && (c = c->next));
++
++					click = ClkWinTitle;
++					arg.v = c;
++				}
++			}
++		}
++	} else if (ev->window == selmon->barwin) {
+ 		i = x = 0;
+ 		do
+ 			x += TEXTW(tags[i]);
+@@ -443,7 +501,7 @@
+ 		else if (ev->x > selmon->ww - (int)TEXTW(stext))
+ 			click = ClkStatusText;
+ 		else
+-			click = ClkWinTitle;
++			click = ClkTopTitle;
+ 	} else if ((c = wintoclient(ev->window))) {
+ 		focus(c);
+ 		restack(selmon);
+@@ -453,7 +511,7 @@
+ 	for (i = 0; i < LENGTH(buttons); i++)
+ 		if (click == buttons[i].click && buttons[i].func && buttons[i].button == ev->button
+ 		&& CLEANMASK(buttons[i].mask) == CLEANMASK(ev->state))
+-			buttons[i].func(click == ClkTagBar && buttons[i].arg.i == 0 ? &arg : &buttons[i].arg);
++			buttons[i].func((click == ClkTagBar || click == ClkWinTitle) && buttons[i].arg.i == 0 ? &arg : &buttons[i].arg);
+ }
+ 
+ void
+@@ -506,7 +564,9 @@
+ 		m->next = mon->next;
+ 	}
+ 	XUnmapWindow(dpy, mon->barwin);
++	XUnmapWindow(dpy, mon->extrabarwin);
+ 	XDestroyWindow(dpy, mon->barwin);
++	XDestroyWindow(dpy, mon->extrabarwin);
+ 	free(mon);
+ }
+ 
+@@ -569,6 +629,7 @@
+ 					if (c->isfullscreen)
+ 						resizeclient(c, m->mx, m->my, m->mw, m->mh);
+ 				XMoveResizeWindow(dpy, m->barwin, m->wx, m->by, m->ww, bh);
++				XMoveResizeWindow(dpy, m->extrabarwin, m->wx, m->eby, m->ww, bh);
+ 			}
+ 			focus(NULL);
+ 			arrange(NULL);
+@@ -696,7 +757,7 @@
+ void
+ drawbar(Monitor *m)
+ {
+-	int x, w, tw = 0;
++	int x, w, tw = 0, n = 0, scm;
+ 	int boxs = drw->fonts->h / 9;
+ 	int boxw = drw->fonts->h / 6 + 2;
+ 	unsigned int i, occ = 0, urg = 0;
+@@ -710,6 +771,8 @@
+ 	}
+ 
+ 	for (c = m->clients; c; c = c->next) {
++		if (ISVISIBLE(c))
++			n++;
+ 		occ |= c->tags;
+ 		if (c->isurgent)
+ 			urg |= c->tags;
+@@ -741,6 +804,49 @@
+ 		}
+ 	}
+ 	drw_map(drw, m->barwin, 0, 0, m->ww, bh);
++
++	if (m == selmon) { /* extra status is only drawn on selected monitor */
++		drw_setscheme(drw, scheme[SchemeNorm]);
++		/* clear default bar draw buffer by drawing a blank rectangle */
++		drw_rect(drw, 0, 0, m->ww, bh, 1, 1);
++		if (extrabarright) {
++			tw = TEXTW(estext) - lrpad + 2; /* 2px right padding */
++			drw_text(drw, m->ww - tw, 0, sw, bh, 0, estext, 0);
++		} else {
++			tw = TEXTW(estext) - lrpad + 2; /* 2px right padding */
++			drw_text(drw, 0, 0, mons->ww, bh, 0, estext, 0);
++		}
++		if (n > 0) {
++			int remainder = w % n;
++			int exw = extrabarright ? 0 : tw;
++			int tabw = (1.0 / (double)n) * (m->ww - tw + 2);
++			/* if you use barpadding, uncomment follow line */
++			//int tabw = (1.0 / (double)n) * (m->ww - tw + 2 - 2 * sp);
++			for (c = m->clients; c; c = c->next) {
++				if (!ISVISIBLE(c))
++					continue;
++				if (m->sel == c)
++					scm = SchemeSel;
++				else if (HIDDEN(c))
++					scm = SchemeHid;
++				else
++					scm = SchemeNorm;
++				drw_setscheme(drw, scheme[scm]);
++
++				if (remainder >= 0) {
++					if (remainder == 0) {
++						tabw--;
++					}
++					remainder--;
++				}
++				drw_text(drw, exw, 0, tabw, bh, lrpad / 2, c->name, 0);
++				exw += tabw;
++			}
++		}
++		m->bt = n;
++		m->btw = w;
++		drw_map(drw, m->extrabarwin, 0, 0, m->ww, bh);
++	}
+ }
+ 
+ void
+@@ -785,9 +891,17 @@
+ focus(Client *c)
+ {
+ 	if (!c || !ISVISIBLE(c))
+-		for (c = selmon->stack; c && !ISVISIBLE(c); c = c->snext);
+-	if (selmon->sel && selmon->sel != c)
++		for (c = selmon->stack; c && (!ISVISIBLE(c) || HIDDEN(c)); c = c->snext);
++	if (selmon->sel && selmon->sel != c) {
+ 		unfocus(selmon->sel, 0);
++
++		if (selmon->hidsel) {
++			hidewin(selmon->sel);
++			if (c)
++				arrange(c->mon);
++			selmon->hidsel = 0;
++		}
++	}
+ 	if (c) {
+ 		if (c->mon != selmon)
+ 			selmon = c->mon;
+@@ -831,28 +945,55 @@
+ }
+ 
+ void
+-focusstack(const Arg *arg)
++focusstackvis(const Arg *arg)
++{
++	focusstack(arg->i, 0);
++}
++
++void
++focusstackhid(const Arg *arg)
++{
++	focusstack(arg->i, 1);
++}
++
++void
++focusstack(int inc, int hid)
+ {
+ 	Client *c = NULL, *i;
+ 
+-	if (!selmon->sel || (selmon->sel->isfullscreen && lockfullscreen))
++	if ((!selmon->sel && !hid) || (selmon->sel->isfullscreen && lockfullscreen && !hid))
+ 		return;
+-	if (arg->i > 0) {
+-		for (c = selmon->sel->next; c && !ISVISIBLE(c); c = c->next);
++	if (!selmon->clients)
++		return;
++
++	if (inc > 0) {
++		if (selmon->sel)
++			for (c = selmon->sel->next;
++					 c && (!ISVISIBLE(c) || (!hid && HIDDEN(c)));
++					 c = c->next);
+ 		if (!c)
+-			for (c = selmon->clients; c && !ISVISIBLE(c); c = c->next);
++			for (c = selmon->clients;
++					 c && (!ISVISIBLE(c) || (!hid && HIDDEN(c)));
++					 c = c->next);
+ 	} else {
+-		for (i = selmon->clients; i != selmon->sel; i = i->next)
+-			if (ISVISIBLE(i))
+-				c = i;
++		if (selmon->sel) {
++			for (i = selmon->clients; i != selmon->sel; i = i->next)
++				if (ISVISIBLE(i) && !(!hid && HIDDEN(i)))
++					c = i;
++		} else
++			c = selmon->clients;
+ 		if (!c)
+ 			for (; i; i = i->next)
+-				if (ISVISIBLE(i))
++				if (ISVISIBLE(i) && !(!hid && HIDDEN(i)))
+ 					c = i;
+ 	}
+ 	if (c) {
+ 		focus(c);
+ 		restack(selmon);
++		if (HIDDEN(c)) {
++			showwin(c);
++			c->mon->hidsel = 1;
++		}
+ 	}
+ }
+ 
+@@ -965,6 +1106,39 @@
+ }
+ 
+ void
++hide(const Arg *arg)
++{
++	hidewin(selmon->sel);
++	focus(NULL);
++	arrange(selmon);
++}
++
++void
++hidewin(Client *c) {
++	if (!c || HIDDEN(c))
++		return;
++
++	Window w = c->win;
++	static XWindowAttributes ra, ca;
++
++	// more or less taken directly from blackbox's hide() function
++	XGrabServer(dpy);
++	XGetWindowAttributes(dpy, root, &ra);
++	XGetWindowAttributes(dpy, w, &ca);
++	// prevent UnmapNotify events
++	XSelectInput(dpy, root, ra.your_event_mask & ~SubstructureNotifyMask);
++	XSelectInput(dpy, w, ca.your_event_mask & ~StructureNotifyMask);
++	XUnmapWindow(dpy, w);
++	setclientstate(c, IconicState);
++	XSelectInput(dpy, root, ra.your_event_mask);
++	XSelectInput(dpy, w, ca.your_event_mask);
++	XUngrabServer(dpy);
++
++	focus(c->snext);
++	arrange(c->mon);
++}
++
++void
+ incnmaster(const Arg *arg)
+ {
+ 	selmon->nmaster = MAX(selmon->nmaster + arg->i, 0);
+@@ -1068,12 +1242,14 @@
+ 	XChangeProperty(dpy, root, netatom[NetClientList], XA_WINDOW, 32, PropModeAppend,
+ 		(unsigned char *) &(c->win), 1);
+ 	XMoveResizeWindow(dpy, c->win, c->x + 2 * sw, c->y, c->w, c->h); /* some windows require this */
+-	setclientstate(c, NormalState);
++	if (!HIDDEN(c))
++		setclientstate(c, NormalState);
+ 	if (c->mon == selmon)
+ 		unfocus(selmon->sel, 0);
+ 	c->mon->sel = c;
+ 	arrange(c->mon);
+-	XMapWindow(dpy, c->win);
++	if (!HIDDEN(c))
++		XMapWindow(dpy, c->win);
+ 	focus(NULL);
+ }
+ 
+@@ -1196,7 +1372,7 @@
+ Client *
+ nexttiled(Client *c)
+ {
+-	for (; c && (c->isfloating || !ISVISIBLE(c)); c = c->next);
++	for (; c && (c->isfloating || !ISVISIBLE(c) || HIDDEN(c)); c = c->next);
+ 	return c;
+ }
+ 
+@@ -1249,6 +1425,16 @@
+ void
+ quit(const Arg *arg)
+ {
++	// fix: reloading dwm keeps all the hidden clients hidden
++	Monitor *m;
++	Client *c;
++	for (m = mons; m; m = m->next) {
++		if (m) {
++			for (c = m->stack; c; c = c->next)
++				if (c && HIDDEN(c)) showwin(c);
++		}
++	}
++
+ 	running = 0;
+ }
+ 
+@@ -1612,6 +1798,25 @@
+ }
+ 
+ void
++show(const Arg *arg)
++{
++	if (selmon->hidsel)
++		selmon->hidsel = 0;
++	showwin(selmon->sel);
++}
++
++void
++showwin(Client *c)
++{
++	if (!c || !HIDDEN(c))
++		return;
++
++	XMapWindow(dpy, c->win);
++	setclientstate(c, NormalState);
++	arrange(c->mon);
++}
++
++void
+ showhide(Client *c)
+ {
+ 	if (!c)
+@@ -1705,6 +1910,7 @@
+ 	selmon->showbar = !selmon->showbar;
+ 	updatebarpos(selmon);
+ 	XMoveResizeWindow(dpy, selmon->barwin, selmon->wx, selmon->by, selmon->ww, bh);
++	XMoveResizeWindow(dpy, selmon->extrabarwin, selmon->wx, selmon->eby, selmon->ww, bh);
+ 	arrange(selmon);
+ }
+ 
+@@ -1750,6 +1956,21 @@
+ }
+ 
+ void
++togglewin(const Arg *arg)
++{
++	Client *c = (Client*)arg->v;
++
++	if (c == selmon->sel) {
++		hidewin(c);
++	} else {
++		if (HIDDEN(c))
++			showwin(c);
++		focus(c);
++		restack(selmon);
++	}
++}
++
++void
+ unfocus(Client *c, int setfocus)
+ {
+ 	if (!c)
+@@ -1812,14 +2033,22 @@
+ 	};
+ 	XClassHint ch = {"dwm", "dwm"};
+ 	for (m = mons; m; m = m->next) {
+-		if (m->barwin)
+-			continue;
+-		m->barwin = XCreateWindow(dpy, root, m->wx, m->by, m->ww, bh, 0, DefaultDepth(dpy, screen),
+-				CopyFromParent, DefaultVisual(dpy, screen),
+-				CWOverrideRedirect|CWBackPixmap|CWEventMask, &wa);
+-		XDefineCursor(dpy, m->barwin, cursor[CurNormal]->cursor);
+-		XMapRaised(dpy, m->barwin);
+-		XSetClassHint(dpy, m->barwin, &ch);
++		if (!m->barwin) {
++			m->barwin = XCreateWindow(dpy, root, m->wx, m->by, m->ww, bh, 0, DefaultDepth(dpy, screen),
++					CopyFromParent, DefaultVisual(dpy, screen),
++					CWOverrideRedirect|CWBackPixmap|CWEventMask, &wa);
++			XDefineCursor(dpy, m->barwin, cursor[CurNormal]->cursor);
++			XMapRaised(dpy, m->barwin);
++			XSetClassHint(dpy, m->barwin, &ch);
++		}
++		if (!m->extrabarwin) {
++			m->extrabarwin = XCreateWindow(dpy, root, m->wx, m->eby, m->ww, bh, 0, DefaultDepth(dpy, screen),
++					CopyFromParent, DefaultVisual(dpy, screen),
++					CWOverrideRedirect|CWBackPixmap|CWEventMask, &wa);
++			XDefineCursor(dpy, m->extrabarwin, cursor[CurNormal]->cursor);
++			XMapRaised(dpy, m->extrabarwin);
++			XSetClassHint(dpy, m->extrabarwin, &ch);
++		}
+ 	}
+ }
+ 
+@@ -1828,12 +2057,15 @@
+ {
+ 	m->wy = m->my;
+ 	m->wh = m->mh;
++	m->wh -= bh * m->showbar * 2;
++	m->wy = m->showbar ? m->wy + bh : m->wy;
+ 	if (m->showbar) {
+-		m->wh -= bh;
+-		m->by = m->topbar ? m->wy : m->wy + m->wh;
+-		m->wy = m->topbar ? m->wy + bh : m->wy;
+-	} else
++		m->by = m->topbar ? m->wy - bh : m->wy + m->wh;
++		m->eby = m->topbar ? m->wy + m->wh : m->wy - bh;
++	} else {
+ 		m->by = -bh;
++		m->eby = -bh;
++	}
+ }
+ 
+ void
+@@ -1990,8 +2222,20 @@
+ void
+ updatestatus(void)
+ {
+-	if (!gettextprop(root, XA_WM_NAME, stext, sizeof(stext)))
++	char text[512];
++	if (!gettextprop(root, XA_WM_NAME, text, sizeof(text))) {
+ 		strcpy(stext, "dwm-"VERSION);
++		estext[0] = '\0';
++	} else {
++		char *e = strchr(text, statussep);
++		if (e) {
++			*e = '\0'; e++;
++			strncpy(estext, e, sizeof(estext) - 1);
++		} else {
++			estext[0] = '\0';
++		}
++		strncpy(stext, text, sizeof(stext) - 1);
++	}
+ 	drawbar(selmon);
+ }
+ 
+@@ -2070,7 +2314,7 @@
+ 	if (w == root && getrootptr(&x, &y))
+ 		return recttomon(x, y, 1, 1);
+ 	for (m = mons; m; m = m->next)
+-		if (w == m->barwin)
++		if (w == m->barwin || w == m->extrabarwin)
+ 			return m;
+ 	if ((c = wintoclient(w)))
+ 		return c->mon;
+Common subdirectories: a/.git and b/.git
